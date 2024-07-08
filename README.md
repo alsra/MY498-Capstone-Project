@@ -12,7 +12,7 @@ This repository contains the code and data for the completion of MY498, the caps
 
 ## Repository Structure
 
-- `data/`: Contains datasets used for the empirical investigation.
+- `data/`: Contains datasets used for the quantitative investigation.
 - `scripts/`: Includes data processing and analysis scripts.
 - `figures/`: Visualizations and figures generated from the analysis.
 
