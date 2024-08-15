@@ -1,0 +1,291 @@
+---
+title: "pre-processing"
+output: html_document
+date: "2024-06-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## File Download and Combination - Transform to Tabular Data
+```{r}
+urls <- c(
+  "https://www.clarin.si/repository/xmlui/bitstream/handle/11356/1912/ParlaMint-TR.tgz",
+  "https://www.clarin.si/repository/xmlui/bitstream/handle/11356/1912/ParlaMint-RS.tgz"
+)
+
+# Create a vector of the corresponding file names
+files <- c("ParlaMint-TR.tgz", "ParlaMint-RS.tgz")
+
+# Loop through the URLs and download each file
+for (i in 1:length(urls)) {
+  download.file(urls[i], files[i])
+}
+```
+
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(purrr)
+
+# Function to read and combine metadata and transcripts
+combine_speaker_data <- function(base_directory, country_code, years) {
+  combined_data <- data.frame()
+  
+  for (year in years) {
+    directory_path <- file.path(base_directory, as.character(year))
+    all_files <- list.files(directory_path, full.names = TRUE)
+    
+    # Adjusted pattern to match both "-0-meta-en.tsv" and "-1-meta-en.tsv"
+    metadata_files <- all_files[str_detect(all_files, "-meta-en\\.tsv$")]
+    transcript_files <- all_files[str_detect(all_files, "\\.txt$") & !str_detect(all_files, "-meta-en\\.tsv$")]
+    
+    if (length(metadata_files) == 0 || length(transcript_files) == 0) {
+      message("No metadata or transcript files found for year:", year)
+      next
+    }
+    
+    for (metadata_file in metadata_files) {
+      message("Processing metadata file:", metadata_file)
+      metadata <- read_tsv(metadata_file, col_types = cols(
+        Text_ID = col_character(),
+        ID = col_character(),
+        Title = col_character(),
+        Body = col_character(),
+        Term = col_character(),
+        Session = col_character(),
+        Meeting = col_character(),
+        Agenda = col_character(),
+        Subcorpus = col_character(),
+        Lang = col_character(),
+        Speaker_role = col_character(),
+        Speaker_MP = col_character(),
+        Speaker_minister = col_character(),
+        Speaker_party = col_character(),
+        Party_orientation = col_character(),
+        Party_status = col_character(),
+        Speaker_gender = col_character(),
+        Speaker_birth = col_character(),
+        Date = col_date(),
+        Sitting = col_date(),
+        Speaker_name = col_character()
+      ))
+      
+      date_string <- str_extract(basename(metadata_file), "\\d{4}-\\d{2}-\\d{2}")
+      transcript_file <- transcript_files[str_detect(transcript_files, date_string)]
+      
+      if (length(transcript_file) == 0) {
+        message("No transcript file found for date:", date_string)
+        next
+      }
+      
+      transcript <- read_tsv(transcript_file, col_names = c("ID", "speech"), col_types = cols(
+        ID = col_character(),
+        speech = col_character()
+      ))
+      
+      transcript <- transcript %>%
+        mutate(speech = str_remove_all(speech, "\\[\\[.*?\\]\\]")) # Remove text inside double brackets
+      
+      combined <- transcript %>%
+        left_join(metadata, by = "ID")
+      
+      combined_data <- bind_rows(combined_data, combined)
+    }
+  }
+  
+  combined_data <- combined_data %>%
+    mutate(Speaker_name = ifelse(!str_detect(Speaker_name, ","), 
+                                 paste(Speaker_name, NA), 
+                                 Speaker_name)) %>%
+    separate(Speaker_name, into = c("Last", "First"), sep = ", ", fill = "right") %>%
+    unite("Speaker_name", First, Last, sep = " ", na.rm = TRUE) %>%
+    select(Speaker_name, Speaker_role, Speaker_MP, Speaker_party, Party_status, Party_orientation, Speaker_gender, Date, speech)
+  
+  return(combined_data)
+}
+
+# Define the base directories
+base_directory_rs <- ".../../Downloads/ParlaMint-RS/ParlaMint-RS.txt"
+base_directory_tr <- "../../Downloads/ParlaMint-TR/ParlaMint-TR.txt"
+years <- 2011:2014
+
+# Combine data for Serbia
+combined_data_rs <- combine_speaker_data(base_directory_rs, "RS", years)
+if (!is.null(combined_data_rs)) {
+  combined_data_rs <- combined_data_rs %>%
+    distinct(speech, .keep_all = TRUE)
+  
+  write.csv(combined_data_rs, file = "../data/pre-processed_rs.csv", row.names = FALSE)
+}
+
+# Combine data for Turkey
+combined_data_tr <- combine_speaker_data(base_directory_tr, "TR", years)
+if (!is.null(combined_data_tr1)) {
+  combined_data_tr <- combined_data_tr %>%
+    distinct(speech, .keep_all = TRUE)
+  
+  write.csv(combined_data_tr, file = "../data/pre-processed_tr.csv", row.names = FALSE)
+}
+
+# For later use
+combined_data_tr <- read.csv("../data/pre-processed_tr.csv")
+combined_data_rs <- read.csv("../data/pre-processed_rs.csv")
+```
+
+## Finding the total speeches made in a year 
+```{r}
+# Serbia
+speech_counts_rs<- combined_data_rs %>%
+  mutate(year = substr(Date, 1, 4)) %>% 
+  group_by(year) %>%  
+  summarise(speech_count = n())  
+
+# Turkey
+speech_counts_tr<- combined_data_tr %>%
+  mutate(year = substr(Date, 1, 4)) %>% 
+  group_by(year) %>%  
+  summarise(speech_count = n())  
+```
+
+**Serbian**
+```{r}
+silva_keywords_rs <- c("Evropska unija", "Evropski parlament", "Evropski savet", "Evropska komisija", "Evrozona", "Savet Evropske unije", "Evropska centralna banka", "Evropska investiciona banka", "Evropski stabilizacioni mehanizam", "Evropski finansijski stabilizacioni mehanizam", "Evropski finansijski stabilizacioni instrument", "Evropski ustav", "Sud pravde Evropske unije", "Evropski sud pravde", "Evropski revizorski sud", "Evropska služba za spoljne poslove", "Evropski ekonomski i socijalni komitet", "Evropski investicioni fond", "Evropski ombudsman", "Evropski nadzornik za zaštitu podataka", "Ekonomska i monetarna unija Evropske unije", "Evropska zajednička politika", "Evropske politike", "Evropski izbori", "Evropska integracija", "Trojka", "Fronteks", "Ustavni ugovor", "Lisabonski sporazum", "Evrogrupa", "Zajedničko tržište", "Evropska ekonomska zajednica", "Jedinstveno tržište", "Carinska unija", "Bregzit", "Evropski samit")
+
+additional_keywords_rs <- c("Instrument za pretpristupnu pomoć", "IPA", "IPA fondovi", "Fond za koheziju", "Evropski strukturni i investicioni fondovi", "ESIF", "Pretpristupna pomoć", "EU grantovi", "EU finansiranje", "Horizont 2020", "Erasmus", "EU finansijska pomoć", "EU pomoć", "Proširenje EU", "Pristupanje EU", "Integracija EU", "Zemlje kandidati", "Pregovori o pristupanju", "Politika proširenja", "Kriterijumi za pristupanje", "Kriterijumi iz Kopenhagena", "Sporazum o stabilizaciji i pridruživanju",  "Proces skrininga", "Evropska politika susedstva", "EPS", "Istočno partnerstvo", "Projekti blizanaca", "Prekogranična saradnja", "Makro-regionalne strategije", "Strategija pametne specijalizacije", "Evropski fond za regionalni razvoj", "EFRR", "Evropski socijalni fond", "Instrument za stabilnost", "Acquis communautaire", "Evropska konvencija", "Evropska politička zajednica", "Politika evropske integracije", "Komesar za proširenje", "Delegacija EU", "Predstavnik EU", "EU monitoring misija", "Status kandidata za EU", "EU benchmarki", "EU regulative", "EU standardi", "EU reforme", "Kriterijumi za članstvo u EU", "Vizna liberalizacija", "Šengenska viza", "Sporazum o carinskoj uniji", "Jedinstveno evropsko tržište", "Sektorske politike EU")
+
+anti_keywords_rs <- c("Brisel", "Evropa")
+```
+
+```{r}
+# Combine all keywords into one
+all_keywords_rs <- c(silva_keywords_rs, additional_keywords_rs)
+
+# Create a pattern for the main keywords
+pattern_main <- paste0("\\b", paste(all_keywords_rs, collapse = "\\b|\\b"), "\\b")
+
+# Create a pattern for the anti-keywords
+pattern_anti <- paste0("\\b", paste(anti_keywords_rs, collapse = "\\b|\\b"), "\\b")
+
+# Create a pattern for the conditional inclusion (EU or Evropska unija)
+pattern_conditional <- "\\b(EU|Evropska unija)\\b"
+
+# Filter speeches that contain at least one of the main keywords
+filtered_main <- combined_data_rs[grepl(pattern_main, combined_data_rs$speech, ignore.case = TRUE), ]
+
+# Filter speeches that contain anti-keywords and also EU/Evropska unija
+filtered_anti_conditional <- combined_data_rs[
+  grepl(pattern_anti, combined_data_rs$speech, ignore.case = TRUE) &
+    grepl(pattern_conditional, combined_data_rs$speech, ignore.case = TRUE), ]
+
+# Combine the filtered results
+eu_references_rs <- rbind(filtered_main, filtered_anti_conditional)
+
+write.csv(eu_references_rs, file = "../data/eu_references_rs.csv", row.names = FALSE)
+
+# Count the number of speeches meeting the criteria
+eu_references_counts_rs <- eu_references_rs %>%
+  mutate(year = substr(Date, 1, 4)) %>% 
+  group_by(year) %>%  
+  summarise(speech_count = n())  
+```
+
+```{r}
+# Find the remaining speeches that are not included in eu_references_rs
+non_eu_speeches_rs <- combined_data_rs[!(combined_data_rs$speech %in% eu_references_rs$speech), ]
+
+# Save the remaining speeches to a CSV file
+write.csv(non_eu_speeches_rs, file = "../data/non_eu_speeches_rs.csv", row.names = FALSE)
+
+```
+**Turkish**
+```{r}
+silva_keywords_tr <- c("Avrupa Birliği", "Avrupa Parlamentosu", "Avrupa Konseyi", "Avrupa Komisyonu", "Euro Bölgesi", "Avrupa Birliği Konseyi", "Avrupa Merkez Bankası", "Avrupa Yatırım Bankası", "Avrupa İstikrar Mekanizması", "Avrupa Finansal İstikrar Tesisi", "Avrupa Finansal İstikrar Mekanizması", "Avrupa Anayasası", "Avrupa Birliği Adalet Divanı", "Avrupa Adalet Divanı", "Avrupa Sayıştayı", "Avrupa Dış Eylem Servisi", "Avrupa Ekonomik ve Sosyal Komitesi", "Avrupa Yatırım Fonu", "Avrupa Ombudsmanı", "Avrupa Veri Koruma Denetçisi", "Avrupa Birliği Ekonomik ve Parasal Birliği", "Avrupa ortak", "Avrupa politikaları", "Avrupa Seçimleri", "Avrupa Entegrasyonu", "Troyka", "Frontex", "Anayasal Antlaşma", "Lizbon Antlaşması", "Avro Grubu", "Ortak Pazar", "Avrupa Ekonomik Topluluğu", "Tek Pazar", "Gümrük Birliği", "Brexit", "Avrupa zirvesi", "Schengen")
+
+additional_keywords_tr <- c("AB", "Katılım Öncesi Yardım Aracı", "IPA", "IPA fonları", "Uyum Fonu", "Avrupa Yapısal ve Yatırım Fonları", "Katılım öncesi yardım", "AB hibeleri", "AB finansmanı", "Horizon 2020", "Erasmus", "AB mali yardımı", "AB yardımı", "AB genişlemesi", "AB üyeliği", "AB entegrasyonu", "Aday ülkeler", "Katılım müzakereleri", "Genişleme politikası", "Katılım kriterleri", "Kopenhag kriterleri", "İstikrar ve Ortaklık Anlaşması", "SAA", "Tarama süreci", "Avrupa Komşuluk Politikası", "Doğu Ortaklığı", "Eşleştirme projeleri", "Sınır ötesi işbirliği", "Makro-bölgesel stratejiler", "Akıllı Uzmanlaşma Stratejisi", "Brüksel", "Avrupa Bölgesel Kalkınma Fonu", "Avrupa Sosyal Fonu", "İstikrar Aracı", "Acquis communautaire", "Avrupa Sözleşmesi", "Avrupa siyasi topluluğu", "Avrupa entegrasyon politikası", "Genişlemeden Sorumlu Komiser", "AB Delegasyonu", "AB Temsilcisi", "AB izleme misyonu", "AB müktesebatı", "AB aday statüsü", "AB kriterleri", "AB düzenlemeleri", "AB standartları", "AB reformları", "AB üyelik kriterleri", "Vize serbestisi", "Gümrük Birliği anlaşması", "Tek Avrupa Pazarı", "AB sektörel politikaları")
+
+anti_keywords_tr <- c("Brüksel", "Avrupa")
+
+```
+
+```{r}
+all_keywords_tr <- c(silva_keywords_tr, additional_keywords_tr)
+# Create a pattern for the main keywords
+pattern_main <- paste0("\\b", paste(all_keywords_tr, collapse = "\\b|\\b"), "\\b")
+
+# Create a pattern for the anti-keywords
+pattern_anti <- paste0("\\b", paste(anti_keywords_tr, collapse = "\\b|\\b"), "\\b")
+
+# Create a pattern for the conditional inclusion
+pattern_conditional <- "\\b(AB|Avrupa Birliği)\\b"
+
+# Filter speeches that contain at least one of the main keywords
+filtered_main <- combined_data_tr[grepl(pattern_main, combined_data_tr$speech, ignore.case = TRUE), ]
+
+filtered_anti_conditional <- combined_data_tr[
+  grepl(pattern_anti, combined_data_tr$speech, ignore.case = TRUE) &
+    grepl(pattern_conditional, combined_data_tr$speech, ignore.case = TRUE), ]
+
+# Combine the filtered results
+eu_references_tr <- rbind(filtered_main, filtered_anti_conditional)
+
+# Remove duplicate rows
+eu_references_tr <- unique(eu_references_tr)
+
+
+write.csv(eu_references_tr, file = "../data/eu_references_tr.csv", row.names = FALSE)
+
+# Count the number of speeches meeting the criteria
+eu_references_counts_tr <- eu_references_tr %>%
+  mutate(year = substr(Date, 1, 4)) %>% 
+  group_by(year) %>%  
+  summarise(speech_count = n())  
+
+```
+
+
+```{r}
+df <- eu_references_rs
+parties_of_interest <- c('SNS', 'SPS', 'SRS', 'DS', 'SDPS')
+
+# Step 3: Count the number of speeches and unique MPs per party
+speech_counts <- df %>%
+  count(Speaker_party) %>%
+  rename(Speech_Count = n)
+
+unique_mps_counts <- df %>%
+  group_by(Speaker_party) %>%
+  summarise(Unique_MPs = n_distinct(Speaker_MP))
+
+# Step 4: Combine 'Others' category for parties not in the list
+# Combine non-listed parties into 'Others'
+df_filtered <- df
+
+speech_counts_filtered <- df_filtered %>%
+  count(Speaker_party) %>%
+  rename(Speech_Count = n)
+
+unique_mps_filtered <- df_filtered %>%
+  group_by(Speaker_party) %>%
+  summarise(Unique_MPs = n_distinct(Speaker_MP))
+
+# Step 5: Calculate the total number of speeches
+total_speeches <- sum(speech_counts_filtered$Speech_Count)
+
+# Step 6: Calculate the percentage of total speeches for each party
+result_df <- speech_counts_filtered %>%
+  left_join(unique_mps_filtered, by = "Speaker_party") %>%
+  mutate(Percentage_of_Total = (Speech_Count / total_speeches) * 100) %>%
+  arrange(Speaker_party)
+
+# Print the result
+print(result_df)
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
